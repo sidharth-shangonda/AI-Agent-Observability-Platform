@@ -1,0 +1,21 @@
+{
+  "name": "ai-observability-project",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/practice/agent.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "prepractice": "pnpm build",
+    "practice": "node dist/practice/agent.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^22.19.20",
+    "typescript": "^6.0.3"
+  },
+  "private": true
+}
