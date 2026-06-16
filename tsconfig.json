@@ -5,11 +5,14 @@
     "rootDir": "src",
     "outDir": "dist",
     "strict": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "types": [
-      "node"
+      "node",
+      "jest"
     ]
   },
   "include": [
