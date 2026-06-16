@@ -1,0 +1,174 @@
+datasource db {
+  provider   = "postgresql"
+  extensions = [vector]
+}
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+model Tenant {
+  id        String    @id @default(uuid())
+  name      String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  projects  Project[]
+}
+
+model Project {
+  id               String            @id @default(uuid())
+  tenantId         String
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name             String
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  apiKeys          ApiKey[]
+  rawTraces        RawTrace[]
+  agentTraces      AgentTrace[]
+  agentMemories    AgentMemory[]
+  webhookEndpoints WebhookEndpoint[]
+}
+
+model ApiKey {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  hashedKey String   @unique // SHA-256 hash of API key
+  prefix    String   // e.g. "sk_live_1a2b3c"
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+enum TraceStatus {
+  PENDING
+  SUCCESS
+  ERROR
+}
+
+model RawTrace {
+  id        String      @id @default(uuid())
+  projectId String
+  project   Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  payload   Json        // Raw trace request body received from API
+  status    TraceStatus @default(PENDING)
+  error     String?     // Error message if processing fails
+  createdAt DateTime    @default(now())
+}
+
+model AgentTrace {
+  id              String      @id @default(uuid())
+  projectId       String
+  project         Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  externalTraceId String?     // ID supplied by client-side SDK
+  name            String
+  status          TraceStatus @default(SUCCESS)
+  tokensUsed      Int         @default(0)
+  cost            Decimal     @default(0.0) @db.Decimal(10, 6)
+  latencyMs       Int         @default(0)
+  metadata        Json?       // Key-value metadata from client
+  createdAt       DateTime    @default(now())
+  spans           AgentSpan[]
+
+  @@unique([projectId, externalTraceId])
+}
+
+enum SpanType {
+  LLM
+  TOOL
+  RETRIEVER
+  CHAIN
+  AGENT
+}
+
+model AgentSpan {
+  id                String             @id @default(uuid())
+  traceId           String
+  trace             AgentTrace         @relation(fields: [traceId], references: [id], onDelete: Cascade)
+  parentSpanId      String?
+  parentSpan        AgentSpan?         @relation("SpanHierarchy", fields: [parentSpanId], references: [id], onDelete: Cascade)
+  childSpans        AgentSpan[]        @relation("SpanHierarchy")
+  type              SpanType
+  name              String
+  status            TraceStatus        @default(SUCCESS)
+  startTime         DateTime
+  endTime           DateTime
+  latencyMs         Int
+  input             Json?
+  output            Json?
+  tokenCount        Json?              // e.g. { "prompt": 120, "completion": 60 }
+  cost              Decimal            @default(0.0) @db.Decimal(10, 6)
+  metadata          Json?
+  evaluationResults EvaluationResult[]
+}
+
+model AgentMemory {
+  id        String                     @id @default(uuid())
+  projectId String
+  project   Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  content   String
+  embedding Unsupported("vector(1536)")
+  metadata  Json?
+  createdAt DateTime                   @default(now())
+
+  @@index([embedding])
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model EvaluationResult {
+  id           String    @id @default(uuid())
+  spanId       String
+  span         AgentSpan @relation(fields: [spanId], references: [id], onDelete: Cascade)
+  detectorName String    // Name of detector rule, e.g. "token_cost_spike"
+  severity     Severity
+  reason       String
+  metadata     Json?
+  createdAt    DateTime  @default(now())
+}
+
+model WebhookEndpoint {
+  id             String           @id @default(uuid())
+  projectId      String
+  project        Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  url            String
+  secret         String           // HMAC signing secret
+  isActive       Boolean          @default(true)
+  events         Json             // JSON array of event strings: ["anomaly.detected"]
+  createdAt      DateTime         @default(now())
+  webhookOutboxs WebhookOutbox[]
+}
+
+enum DeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model WebhookOutbox {
+  id          String          @id @default(uuid())
+  endpointId  String
+  endpoint    WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+  eventType   String          // e.g., "anomaly.detected"
+  payload     Json
+  status      DeliveryStatus  @default(PENDING)
+  attempts    Int             @default(0)
+  nextRetryAt DateTime        @default(now())
+  error       String?
+  createdAt   DateTime        @default(now())
+}
+
+model DeadLetterJob {
+  id        String   @id @default(uuid())
+  queueName String   // Name of the BullMQ queue
+  jobId     String
+  payload   Json
+  error     String?
+  createdAt DateTime @default(now())
+}
