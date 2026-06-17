@@ -9,6 +9,7 @@ export const TelemetrySpanSchema = z.object({
   status: z.nativeEnum(TraceStatus).default(TraceStatus.SUCCESS),
   startTime: z.string().datetime({ message: 'startTime must be a valid ISO datetime string' }),
   endTime: z.string().datetime({ message: 'endTime must be a valid ISO datetime string' }),
+  latencyMs: z.number().int().nonnegative().optional(),
   input: z.any().optional(),
   output: z.any().optional(),
   tokenCount: z

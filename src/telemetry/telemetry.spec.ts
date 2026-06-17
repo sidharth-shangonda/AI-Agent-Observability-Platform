@@ -12,6 +12,12 @@ describe('Telemetry Ingestion & Processing Integration Tests (Phase 3)', () => {
   let processor: TraceProcessor;
   const mockQueue = {
     add: jest.fn().mockResolvedValue({ id: 'mock-job-id' }),
+    opts: {
+      connection: {
+        host: process.env.REDIS_HOST || 'localhost',
+        port: Number(process.env.REDIS_PORT) || 6379,
+      },
+    },
   };
 
   beforeAll(async () => {
@@ -259,7 +265,7 @@ describe('Telemetry Ingestion & Processing Integration Tests (Phase 3)', () => {
       status: TraceStatus.SUCCESS,
       spans: [
         {
-          id: 'aa22bb33-cccc-dddd-eeee-ffff00001111',
+          id: 'aa22bb33-cccc-4ddd-aeee-ffff00001111',
           type: SpanType.AGENT,
           name: 'First Version Span',
           startTime: '2026-06-17T12:00:00.000Z',
@@ -297,7 +303,7 @@ describe('Telemetry Ingestion & Processing Integration Tests (Phase 3)', () => {
       status: TraceStatus.SUCCESS,
       spans: [
         {
-          id: 'bb33cc44-dddd-eeee-ffff-000011112222',
+          id: 'bb33cc44-dddd-4eee-aeee-000011112222',
           type: SpanType.AGENT,
           name: 'Second Version Span',
           startTime: '2026-06-17T12:00:00.000Z',

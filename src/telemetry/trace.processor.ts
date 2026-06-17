@@ -1,6 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Inject, Logger } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { SystemPrismaService } from '../prisma/system-prisma.service';
 import { TelemetryTraceSchema } from './telemetry.schema';
 import { TraceStatus, Prisma } from '@prisma/client';
@@ -70,41 +71,7 @@ export class TraceProcessor extends WorkerHost {
         latencyMs = maxEnd - minStart;
       }
 
-      // 4. Construct parent-child span trees
-      const spanMap = new Map<string, any>();
-      for (const span of spans) {
-        spanMap.set(span.id, { ...span, children: [] });
-      }
-
-      const rootSpans: any[] = [];
-      for (const span of spanMap.values()) {
-        if (span.parentSpanId && spanMap.has(span.parentSpanId)) {
-          spanMap.get(span.parentSpanId).children.push(span);
-        } else {
-          rootSpans.push(span);
-        }
-      }
-
-      // Recursive mapper to build Prisma's nested create structure
-      const mapSpanToPrisma = (span: any): any => {
-        return {
-          id: span.id,
-          type: span.type,
-          name: span.name,
-          status: span.status,
-          startTime: new Date(span.startTime),
-          endTime: new Date(span.endTime),
-          latencyMs: span.latencyMs ?? (new Date(span.endTime).getTime() - new Date(span.startTime).getTime()),
-          input: span.input ?? Prisma.DbNull,
-          output: span.output ?? Prisma.DbNull,
-          tokenCount: span.tokenCount ?? Prisma.DbNull,
-          cost: span.cost ?? 0,
-          metadata: span.metadata ?? Prisma.DbNull,
-          childSpans: span.children.length > 0 ? {
-            create: span.children.map(mapSpanToPrisma),
-          } : undefined,
-        };
-      };
+      const traceDbId = randomUUID();
 
       // 5. Execute DB write in a transaction (with idempotency support)
       await this.systemPrisma.$transaction(async (tx) => {
@@ -126,9 +93,10 @@ export class TraceProcessor extends WorkerHost {
           });
         }
 
-        // Create the new AgentTrace and nested Spans
+        // Create the new AgentTrace
         await tx.agentTrace.create({
           data: {
+            id: traceDbId,
             projectId,
             externalTraceId: payload.id,
             name: payload.name,
@@ -137,10 +105,29 @@ export class TraceProcessor extends WorkerHost {
             tokensUsed,
             cost,
             latencyMs,
-            spans: {
-              create: rootSpans.map(mapSpanToPrisma),
-            },
           },
+        });
+
+        // Insert all spans in a flat structure using createMany
+        const flatSpans = spans.map((span) => ({
+          id: span.id,
+          traceId: traceDbId,
+          parentSpanId: span.parentSpanId || null,
+          type: span.type,
+          name: span.name,
+          status: span.status,
+          startTime: new Date(span.startTime),
+          endTime: new Date(span.endTime),
+          latencyMs: span.latencyMs ?? (new Date(span.endTime).getTime() - new Date(span.startTime).getTime()),
+          input: span.input ?? Prisma.DbNull,
+          output: span.output ?? Prisma.DbNull,
+          tokenCount: span.tokenCount ?? Prisma.DbNull,
+          cost: span.cost ?? 0,
+          metadata: span.metadata ?? Prisma.DbNull,
+        }));
+
+        await tx.agentSpan.createMany({
+          data: flatSpans,
         });
 
         // Update RawTrace status to SUCCESS
