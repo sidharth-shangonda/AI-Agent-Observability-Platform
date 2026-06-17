@@ -1,9 +1,11 @@
 import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { validateConfig } from './config/env.config';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ContextMiddleware } from './auth/context.middleware';
+import { BullModule } from '@nestjs/bullmq';
+import { TelemetryModule } from './telemetry/telemetry.module';
 
 @Module({
   imports: [
@@ -11,8 +13,28 @@ import { ContextMiddleware } from './auth/context.middleware';
       isGlobal: true,
       validate: validateConfig,
     }),
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        connection: {
+          host: configService.get<string>('REDIS_HOST', 'localhost'),
+          port: configService.get<number>('REDIS_PORT', 6379),
+        },
+        defaultJobOptions: {
+          attempts: 3,
+          backoff: {
+            type: 'exponential',
+            delay: 1000,
+          },
+          removeOnComplete: true,
+          removeOnFail: false,
+        },
+      }),
+    }),
     PrismaModule,
     HealthModule,
+    TelemetryModule,
   ],
 })
 export class AppModule implements NestModule {
