@@ -84,8 +84,27 @@ Below is the structured progress of the **60-day engineering roadmap**:
 * **Automated RLS Injector**: Built a Prisma Client query extension that intercepts all operations, wrapping them in an interactive transaction that executes `SET LOCAL` variables dynamically. Utilizes an `isInRlsTransaction` context flag to prevent infinite recursion deadlocks.
 * **Jest Integration Tests**: Created a full test suite utilizing Fastify's native `inject()` method to verify that RLS isolation blocks unauthorized project access.
 
-### ⬜ Phase 3 — Telemetry Ingestion (Days 16–21)
-* *Next up: Ingesting raw spans, enqueuing them via BullMQ, and returning instant `202 Accepted`.*
+### 🟩 Phase 3 — Telemetry Ingestion & Queue (Days 16–21)
+* **Zod Payload Validation**: Implemented strict validation schemas for telemetry inputs to validate trace boundaries, timestamps, and nested span parameters.
+* **Asynchronous Buffer Queue**: Configured global `BullModule` queue integration backed by the local Redis container instance.
+* **POST /v1/traces Telemetry API**: Implemented a protected controller route that writes trace payloads to `RawTrace`, enqueues a processing job with the raw trace ID, and instantly returns `202 Accepted` to keep client latency low.
+* **Idempotent Background Worker**: Implemented a `TraceProcessor` worker that:
+  - Computes cumulative trace statistics: total tokens, costs, and span-boundary latency.
+  - Groups spans into flat structures for batch inserts via `createMany`, resolving relations cleanly in Prisma.
+  - Guarantees idempotency by checking and deleting existing trace duplicate records in a transaction before inserting updates.
+* **Jest Test Coverage**: Created a test suite mock-testing enqueues, payload parsing, tree writes, and idempotency overrides.
+
+### ⬜ Phase 4 — OpenTelemetry Mapping & Trace Costs (Days 22–27)
+* *Next up: Map spans to standard OpenTelemetry semantic conventions and integrate pricing calculation rules for different LLM models.*
+
+### ⬜ Phase 5 — Vector Search & Memory Tracing (Days 28–35)
+* *Future: Implement Cosine Similarity search endpoints on pgvector embeddings, and trace memory read/write operations within span sub-graphs.*
+
+### ⬜ Phase 6 — Webhook Alerting & Anomaly Engine (Days 36–45)
+* *Future: Trigger real-time notifications on token cost spikes, model errors, or latency thresholds, and queue alerts to webhook endpoints.*
+
+### ⬜ Phase 7 — Prometheus Metric Scopes & Grafana (Days 46–60)
+* *Future: Expose custom Prometheus metrics (throughput, latency, token count, cost aggregate, queue load) and design dashboards for multi-tenant visualization.*
 
 ---
 
