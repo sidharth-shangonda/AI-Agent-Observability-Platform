@@ -39,13 +39,16 @@ describe('Telemetry Ingestion & Processing Integration Tests (Phase 3)', () => {
   afterAll(async () => {
     // Cleanup any test trace details we added
     await systemPrisma.agentTrace.deleteMany({
-      where: { externalTraceId: { in: ['test-trace-123', 'test-trace-duplicate'] } },
+      where: { externalTraceId: { in: ['test-trace-123', 'test-trace-duplicate', 'test-trace-4'] } },
     });
     await systemPrisma.rawTrace.deleteMany({
       where: { payload: { path: ['id'], equals: 'test-trace-123' } },
     });
     await systemPrisma.rawTrace.deleteMany({
       where: { payload: { path: ['id'], equals: 'test-trace-duplicate' } },
+    });
+    await systemPrisma.rawTrace.deleteMany({
+      where: { payload: { path: ['id'], equals: 'test-trace-4' } },
     });
     await app.close();
   });
@@ -334,5 +337,157 @@ describe('Telemetry Ingestion & Processing Integration Tests (Phase 3)', () => {
     expect(agentTrace?.name).toBe('Updated Trace Run');
     expect(agentTrace?.spans.length).toBe(1);
     expect(agentTrace?.spans[0].name).toBe('Second Version Span');
+  });
+
+  it('6. TraceProcessor should extract OTel attributes, map token counts, calculate correct pricing, and accumulate totals (Phase 4)', async () => {
+    const project = await systemPrisma.project.findFirst({
+      where: { apiKeys: { some: { prefix: 'sk_live_prod' } } },
+    });
+    expect(project).toBeDefined();
+
+    const tracePayload = {
+      id: 'test-trace-4',
+      name: 'OpenTelemetry & Cost Trace',
+      status: TraceStatus.SUCCESS,
+      metadata: { testPhase: 4 },
+      spans: [
+        {
+          id: 'df9433eb-6f4e-4f76-8f35-9c8cb1a5e1cf',
+          type: SpanType.LLM,
+          name: 'OpenAI GPT-4o Span',
+          status: TraceStatus.SUCCESS,
+          startTime: '2026-06-17T12:00:00.000Z',
+          endTime: '2026-06-17T12:00:02.000Z',
+          metadata: {
+            'gen_ai.system': 'openai',
+            'gen_ai.request.model': 'gpt-4o',
+            'gen_ai.usage.prompt_tokens': 1000,
+            'gen_ai.usage.completion_tokens': 500,
+          },
+        },
+        {
+          id: 'c8e9b62a-b733-4ca2-8db8-fb9e2b10167c',
+          type: SpanType.LLM,
+          name: 'Anthropic Claude 3.5 Sonnet Span',
+          status: TraceStatus.SUCCESS,
+          startTime: '2026-06-17T12:00:03.000Z',
+          endTime: '2026-06-17T12:00:05.000Z',
+          metadata: {
+            'gen_ai.system': 'anthropic',
+            'gen_ai.request.model': 'claude-3-5-sonnet',
+            'gen_ai.usage.prompt_tokens': '2000', // testing robust parsing of string numbers
+            'gen_ai.usage.completion_tokens': '1000',
+          },
+        },
+        {
+          id: 'a9f5d378-5db6-4cf3-b9ee-6cfb0b0a8801',
+          type: SpanType.LLM,
+          name: 'Unrecognized Model Span',
+          status: TraceStatus.SUCCESS,
+          startTime: '2026-06-17T12:00:06.000Z',
+          endTime: '2026-06-17T12:00:07.000Z',
+          metadata: {
+            'gen_ai.system': 'unknown-provider',
+            'gen_ai.request.model': 'unknown-model',
+            'gen_ai.usage.prompt_tokens': 500,
+            'gen_ai.usage.completion_tokens': 200,
+          },
+        },
+        {
+          // Span that has cost explicitly provided
+          id: '95df2db2-2fb0-4357-a9a3-5c8e3cf9a3e2',
+          type: SpanType.LLM,
+          name: 'Explicit Cost Span',
+          status: TraceStatus.SUCCESS,
+          startTime: '2026-06-17T12:00:08.000Z',
+          endTime: '2026-06-17T12:00:09.000Z',
+          tokenCount: { prompt: 100, completion: 50 },
+          cost: 0.05,
+          metadata: {
+            'gen_ai.system': 'openai',
+            'gen_ai.request.model': 'gpt-4o',
+          },
+        },
+      ],
+    };
+
+    const rawTrace = await systemPrisma.rawTrace.create({
+      data: {
+        projectId: project!.id,
+        payload: tracePayload as any,
+        status: TraceStatus.PENDING,
+      },
+    });
+
+    const mockJob = {
+      id: 'mock-job-4',
+      data: {
+        rawTraceId: rawTrace.id,
+        projectId: project!.id,
+        tenantId: project!.tenantId,
+      },
+    } as any;
+
+    await processor.process(mockJob);
+
+    // Verify Trace
+    const agentTrace = await systemPrisma.agentTrace.findUnique({
+      where: {
+        projectId_externalTraceId: {
+          projectId: project!.id,
+          externalTraceId: 'test-trace-4',
+        },
+      },
+      include: { spans: true },
+    });
+
+    expect(agentTrace).toBeDefined();
+    expect(agentTrace?.name).toBe('OpenTelemetry & Cost Trace');
+
+    // Expected costs:
+    // 1. OpenAI GPT-4o:
+    //    promptRatePer1M = 2.50 -> 1000 * 2.50 / 1_000_000 = 0.0025
+    //    completionRatePer1M = 10.00 -> 500 * 10.00 / 1_000_000 = 0.005
+    //    total = 0.0075
+    // 2. Anthropic Claude 3.5 Sonnet:
+    //    promptRatePer1M = 3.00 -> 2000 * 3.00 / 1_000_000 = 0.006
+    //    completionRatePer1M = 15.00 -> 1000 * 15.00 / 1_000_000 = 0.015
+    //    total = 0.021
+    // 3. Unrecognized Model: total = 0.0
+    // 4. Explicit Cost: total = 0.05 (should NOT calculate automatically since cost was provided)
+
+    const gpt4oSpan = agentTrace?.spans.find(s => s.name === 'OpenAI GPT-4o Span');
+    const claudeSpan = agentTrace?.spans.find(s => s.name === 'Anthropic Claude 3.5 Sonnet Span');
+    const unknownSpan = agentTrace?.spans.find(s => s.name === 'Unrecognized Model Span');
+    const explicitSpan = agentTrace?.spans.find(s => s.name === 'Explicit Cost Span');
+
+    expect(gpt4oSpan).toBeDefined();
+    expect(gpt4oSpan?.tokenCount).toEqual({ prompt: 1000, completion: 500 });
+    expect(Number(gpt4oSpan?.cost)).toBeCloseTo(0.0075, 8);
+
+    expect(claudeSpan).toBeDefined();
+    expect(claudeSpan?.tokenCount).toEqual({ prompt: 2000, completion: 1000 });
+    expect(Number(claudeSpan?.cost)).toBeCloseTo(0.021, 8);
+
+    expect(unknownSpan).toBeDefined();
+    expect(unknownSpan?.tokenCount).toEqual({ prompt: 500, completion: 200 });
+    expect(Number(unknownSpan?.cost)).toBe(0);
+
+    expect(explicitSpan).toBeDefined();
+    expect(explicitSpan?.tokenCount).toEqual({ prompt: 100, completion: 50 });
+    expect(Number(explicitSpan?.cost)).toBe(0.05);
+
+    // Cumulative trace totals
+    // Total tokens:
+    // gpt-4o: 1500
+    // claude: 3000
+    // unknown: 700
+    // explicit: 150
+    // Total = 1500 + 3000 + 700 + 150 = 5350
+    expect(agentTrace?.tokensUsed).toBe(5350);
+
+    // Total cost:
+    // 0.0075 + 0.021 + 0.0 + 0.05 = 0.0785
+    expect(Number(agentTrace?.cost)).toBeCloseTo(0.0785, 8);
   });
 });
