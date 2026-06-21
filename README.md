@@ -94,8 +94,11 @@ Below is the structured progress of the **60-day engineering roadmap**:
   - Guarantees idempotency by checking and deleting existing trace duplicate records in a transaction before inserting updates.
 * **Jest Test Coverage**: Created a test suite mock-testing enqueues, payload parsing, tree writes, and idempotency overrides.
 
-### ⬜ Phase 4 — OpenTelemetry Mapping & Trace Costs (Days 22–27)
-* *Next up: Map spans to standard OpenTelemetry semantic conventions and integrate pricing calculation rules for different LLM models.*
+### 🟩 Phase 4 — OpenTelemetry Mapping & Trace Costs (Days 22–27)
+* **Model Pricing Catalog**: Built a `PricingService` storing prompt and completion token rates for major LLM providers (OpenAI, Anthropic, Cohere) supporting exact and prefix version matching.
+* **OTel Convention Extraction**: Automatically extracts token counts and model attributes from standard OpenTelemetry semantic metadata (e.g., `gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.prompt_tokens`) when root values are missing.
+* **Dynamic Cost Aggregation**: Computes cost for LLM spans missing explicit values based on extracted token counts, and accumulates trace-level `cost` and `tokensUsed` statistics.
+* **Jest Test Integration**: Added comprehensive tests verifying exact pricing rates, fallback parameters, and OTel attribute handling.
 
 ### ⬜ Phase 5 — Vector Search & Memory Tracing (Days 28–35)
 * *Future: Implement Cosine Similarity search endpoints on pgvector embeddings, and trace memory read/write operations within span sub-graphs.*
@@ -152,27 +155,44 @@ The server will boot and listen on `http://localhost:3000`.
 ## Testing & Verification
 
 ### 1. Running Integration Tests
-Run the automated Jest suite to verify authentication guards and RLS isolation rules:
+Run all integration test suites (Authentication, RLS, Telemetry queue ingestion, OTel mappings, and model cost calculations):
 ```bash
-npx jest src/auth/auth.spec.ts --preset ts-jest
+npx jest src/auth/auth.spec.ts src/telemetry/telemetry.spec.ts --preset ts-jest --runInBand
 ```
 
 ### 2. Manual Curl Tests
 
-* **Protected endpoint (unauthenticated)**:
-  ```bash
-  curl -i http://localhost:3000/health/protected
-  # Returns 401 Unauthorized ("API key is missing")
-  ```
-
-* **Protected endpoint (Production Project Key)**:
-  ```bash
-  curl -i -H "Authorization: Bearer sk_live_prod_12345678abcdef" http://localhost:3000/health/protected
-  # Returns 200 OK with Production context and traceCount = 1 (seeded trace)
-  ```
-
-* **Protected endpoint (Staging Project Key)**:
+* **Protected health check (Staging Project Key)**:
   ```bash
   curl -i -H "x-api-key: sk_test_stage_87654321fedcba" http://localhost:3000/health/protected
   # Returns 200 OK with Staging context and traceCount = 0 (RLS filtered out Production trace)
+  ```
+
+* **Ingest OpenTelemetry GenAI trace payload**:
+  ```bash
+  curl -i -X POST http://localhost:3000/v1/traces \
+    -H "Content-Type: application/json" \
+    -H "x-api-key: sk_live_prod_12345678abcdef" \
+    -d '{
+      "id": "trace-curl-otel-1",
+      "name": "OTel Curl Test Trace",
+      "status": "SUCCESS",
+      "spans": [
+        {
+          "id": "4b6c8cd3-4e31-419b-b9f0-c65d6c8b9d31",
+          "type": "LLM",
+          "name": "OTel gpt-4o-mini call",
+          "status": "SUCCESS",
+          "startTime": "2026-06-21T12:00:00.000Z",
+          "endTime": "2026-06-21T12:00:01.000Z",
+          "metadata": {
+            "gen_ai.system": "openai",
+            "gen_ai.request.model": "gpt-4o-mini",
+            "gen_ai.usage.prompt_tokens": 15000,
+            "gen_ai.usage.completion_tokens": 5000
+          }
+        }
+      ]
+    }'
+  # Returns 202 Accepted. The background queue worker automatically calculates cost (0.005250) and aggregates totals.
   ```
