@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { SystemPrismaService } from '../prisma/system-prisma.service';
 import { TelemetryTraceSchema } from './telemetry.schema';
 import { TraceStatus, Prisma } from '@prisma/client';
+import { PricingService } from './pricing.service';
 
 @Processor('trace-ingestion')
 export class TraceProcessor extends WorkerHost {
@@ -12,6 +13,7 @@ export class TraceProcessor extends WorkerHost {
 
   constructor(
     @Inject(SystemPrismaService) private readonly systemPrisma: SystemPrismaService,
+    @Inject(PricingService) private readonly pricingService: PricingService,
   ) {
     super();
   }
@@ -48,19 +50,87 @@ export class TraceProcessor extends WorkerHost {
 
       const payload = payloadResult.data;
 
-      // 3. Calculate aggregate metrics
+      // 3. Process spans, normalize OTel metadata, calculate costs, and compile trace aggregates
       let tokensUsed = 0;
       let cost = 0;
       const spans = payload.spans;
 
-      for (const span of spans) {
-        if (span.tokenCount) {
-          tokensUsed += (span.tokenCount.prompt ?? 0) + (span.tokenCount.completion ?? 0);
+      const traceDbId = randomUUID();
+
+      const flatSpans = spans.map((span) => {
+        let spanPromptTokens = 0;
+        let spanCompletionTokens = 0;
+        let spanCost = span.cost ?? 0;
+        let tokenCountObj: any = span.tokenCount ?? null;
+
+        if (span.type === 'LLM') {
+          const metadata = span.metadata || {};
+
+          // Extract token counts (OTel semantic conventions fallback)
+          const promptVal = span.tokenCount?.prompt ?? 
+            metadata['gen_ai.usage.prompt_tokens'] ?? 
+            metadata['prompt_tokens'] ?? 
+            metadata['usage.prompt_tokens'];
+
+          const completionVal = span.tokenCount?.completion ?? 
+            metadata['gen_ai.usage.completion_tokens'] ?? 
+            metadata['completion_tokens'] ?? 
+            metadata['usage.completion_tokens'];
+
+          const parseTokens = (val: any): number => {
+            if (typeof val === 'number') return val;
+            if (typeof val === 'string') {
+              const parsed = parseInt(val, 10);
+              return isNaN(parsed) ? 0 : parsed;
+            }
+            return 0;
+          };
+          spanPromptTokens = parseTokens(promptVal);
+          spanCompletionTokens = parseTokens(completionVal);
+
+          if (spanPromptTokens > 0 || spanCompletionTokens > 0) {
+            tokenCountObj = {
+              prompt: spanPromptTokens,
+              completion: spanCompletionTokens,
+            };
+            tokensUsed += (spanPromptTokens + spanCompletionTokens);
+          }
+
+          // Automatically calculate cost if not explicitly provided or is 0
+          if (!spanCost || spanCost === 0) {
+            const providerVal = metadata['gen_ai.system'] ?? metadata['provider'] ?? metadata['vendor'] ?? '';
+            const modelVal = metadata['gen_ai.request.model'] ?? metadata['model'] ?? metadata['request.model'] ?? '';
+
+            if (providerVal && modelVal && (spanPromptTokens > 0 || spanCompletionTokens > 0)) {
+              spanCost = this.pricingService.calculateCost(
+                String(providerVal),
+                String(modelVal),
+                spanPromptTokens,
+                spanCompletionTokens,
+              );
+            }
+          }
         }
-        if (span.cost) {
-          cost += span.cost;
-        }
-      }
+
+        cost += spanCost;
+
+        return {
+          id: span.id,
+          traceId: traceDbId,
+          parentSpanId: span.parentSpanId || null,
+          type: span.type,
+          name: span.name,
+          status: span.status,
+          startTime: new Date(span.startTime),
+          endTime: new Date(span.endTime),
+          latencyMs: span.latencyMs ?? (new Date(span.endTime).getTime() - new Date(span.startTime).getTime()),
+          input: span.input ?? Prisma.DbNull,
+          output: span.output ?? Prisma.DbNull,
+          tokenCount: tokenCountObj ?? Prisma.DbNull,
+          cost: spanCost,
+          metadata: span.metadata ?? Prisma.DbNull,
+        };
+      });
 
       let latencyMs = 0;
       if (spans.length > 0) {
@@ -70,8 +140,6 @@ export class TraceProcessor extends WorkerHost {
         const maxEnd = Math.max(...endTimes);
         latencyMs = maxEnd - minStart;
       }
-
-      const traceDbId = randomUUID();
 
       // 5. Execute DB write in a transaction (with idempotency support)
       await this.systemPrisma.$transaction(async (tx) => {
@@ -86,7 +154,7 @@ export class TraceProcessor extends WorkerHost {
         });
 
         if (existingTrace) {
-          this.logger.log(`Duplicate trace found for externalTraceId: ${payload.id}. Deleting existing trace.`);
+          this.logger.log('Duplicate trace found for externalTraceId: ' + payload.id + '. Deleting existing trace.');
           // Delete the existing trace (Cascade constraints delete associated Spans)
           await tx.agentTrace.delete({
             where: { id: existingTrace.id },
@@ -107,24 +175,6 @@ export class TraceProcessor extends WorkerHost {
             latencyMs,
           },
         });
-
-        // Insert all spans in a flat structure using createMany
-        const flatSpans = spans.map((span) => ({
-          id: span.id,
-          traceId: traceDbId,
-          parentSpanId: span.parentSpanId || null,
-          type: span.type,
-          name: span.name,
-          status: span.status,
-          startTime: new Date(span.startTime),
-          endTime: new Date(span.endTime),
-          latencyMs: span.latencyMs ?? (new Date(span.endTime).getTime() - new Date(span.startTime).getTime()),
-          input: span.input ?? Prisma.DbNull,
-          output: span.output ?? Prisma.DbNull,
-          tokenCount: span.tokenCount ?? Prisma.DbNull,
-          cost: span.cost ?? 0,
-          metadata: span.metadata ?? Prisma.DbNull,
-        }));
 
         await tx.agentSpan.createMany({
           data: flatSpans,
