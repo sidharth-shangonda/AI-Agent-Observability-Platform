@@ -100,8 +100,11 @@ Below is the structured progress of the **60-day engineering roadmap**:
 * **Dynamic Cost Aggregation**: Computes cost for LLM spans missing explicit values based on extracted token counts, and accumulates trace-level `cost` and `tokensUsed` statistics.
 * **Jest Test Integration**: Added comprehensive tests verifying exact pricing rates, fallback parameters, and OTel attribute handling.
 
-### ⬜ Phase 5 — Vector Search & Memory Tracing (Days 28–35)
-* *Future: Implement Cosine Similarity search endpoints on pgvector embeddings, and trace memory read/write operations within span sub-graphs.*
+### 🟩 Phase 5 — Vector Search & Memory Tracing (Days 28–35)
+* **Zod Schemas**: Created validation schemas for memory storage and cosine similarity search (handling exact 1536 float arrays).
+* **Manual RLS SQL Binding**: Wrapped raw database client calls (`$executeRawUnsafe` / `$queryRawUnsafe`) in interactive transaction connection sessions executing custom PG `set_config` parameters to enforce multi-tenant isolation.
+* **REST Memory API**: Exposed protected endpoints under `/v1/memory` for storing, similarity searching, retrieving, listing by trace, and deleting memories.
+* **Integration Tests**: Added full test coverage for dimension checks, cosine similarity ordering, similarity threshold filters, and RLS project boundaries.
 
 ### ⬜ Phase 6 — Webhook Alerting & Anomaly Engine (Days 36–45)
 * *Future: Trigger real-time notifications on token cost spikes, model errors, or latency thresholds, and queue alerts to webhook endpoints.*
@@ -155,9 +158,9 @@ The server will boot and listen on `http://localhost:3000`.
 ## Testing & Verification
 
 ### 1. Running Integration Tests
-Run all integration test suites (Authentication, RLS, Telemetry queue ingestion, OTel mappings, and model cost calculations):
+Run all integration test suites (Authentication, RLS, Telemetry queue ingestion, OTel mappings, model cost calculations, and vector memory similarity search):
 ```bash
-npx jest src/auth/auth.spec.ts src/telemetry/telemetry.spec.ts --preset ts-jest --runInBand
+npx jest src/auth/auth.spec.ts src/memory/memory.spec.ts src/telemetry/telemetry.spec.ts --preset ts-jest --runInBand
 ```
 
 ### 2. Manual Curl Tests
@@ -195,4 +198,34 @@ npx jest src/auth/auth.spec.ts src/telemetry/telemetry.spec.ts --preset ts-jest 
       ]
     }'
   # Returns 202 Accepted. The background queue worker automatically calculates cost (0.005250) and aggregates totals.
+  ```
+
+* **Store Vector Memory**:
+  ```bash
+  curl -i -X POST http://localhost:3000/v1/memory \
+    -H "Content-Type: application/json" \
+    -H "x-api-key: sk_live_prod_12345678abcdef" \
+    -d "{
+      \"content\": \"The agent queried web search to find latest nextjs specs.\",
+      \"embedding\": $(python3 -c "import json; print(json.dumps([0.015]*1536))"),
+      \"metadata\": {
+        \"traceId\": \"trace-curl-555\",
+        \"spanId\": \"50cb88c4-be00-4b53-83eb-62cf9b3f3a0a\",
+        \"source\": \"curl-test\"
+      }
+    }"
+  # Returns 201 Created with the generated memory UUID.
+  ```
+
+* **Search Similarity Vector Memory**:
+  ```bash
+  curl -i -X POST http://localhost:3000/v1/memory/search \
+    -H "Content-Type: application/json" \
+    -H "x-api-key: sk_live_prod_12345678abcdef" \
+    -d "{
+      \"embedding\": $(python3 -c "import json; print(json.dumps([0.015]*1536))"),
+      \"limit\": 2,
+      \"minSimilarity\": 0.9
+    }"
+  # Returns 200 OK with the array of matches sorted by similarity score.
   ```
