@@ -6,6 +6,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { ContextMiddleware } from './auth/context.middleware';
 import { BullModule } from '@nestjs/bullmq';
 import { TelemetryModule } from './telemetry/telemetry.module';
+import { MemoryModule } from './memory/memory.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { TelemetryModule } from './telemetry/telemetry.module';
     PrismaModule,
     HealthModule,
     TelemetryModule,
+    MemoryModule,
   ],
 })
 export class AppModule implements NestModule {
