@@ -1,6 +1,6 @@
 import { Controller, Post, Get, Delete, Body, Param, UseGuards, Inject, HttpCode, HttpStatus, BadRequestException, NotFoundException } from '@nestjs/common';
-import { ApiKeyGuard } from '../auth/auth.guard';
-import { ContextService } from '../auth/context.service';
+import { ApiKeyGuard } from '../common/guards/api-key.guard';
+import { CurrentContext, RequestContextData } from '../common/decorators/current-context.decorator';
 import { MemoryService } from './memory.service';
 import { MemoryStoreSchema, MemorySearchSchema } from './memory.schema';
 
@@ -9,12 +9,14 @@ import { MemoryStoreSchema, MemorySearchSchema } from './memory.schema';
 export class MemoryController {
   constructor(
     @Inject(MemoryService) private readonly memoryService: MemoryService,
-    @Inject(ContextService) private readonly contextService: ContextService,
   ) {}
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  async storeMemory(@Body() body: any) {
+  async storeMemory(
+    @Body() body: any,
+    @CurrentContext() context: RequestContextData,
+  ) {
     const result = MemoryStoreSchema.safeParse(body);
     if (!result.success) {
       throw new BadRequestException({
@@ -23,17 +25,15 @@ export class MemoryController {
       });
     }
 
-    const context = this.contextService.getStore();
-    if (!context) {
-      throw new BadRequestException('Request context is missing');
-    }
-
     return this.memoryService.storeMemory(context.tenantId, context.projectId, result.data);
   }
 
   @Post('search')
   @HttpCode(HttpStatus.OK)
-  async searchSimilarity(@Body() body: any) {
+  async searchSimilarity(
+    @Body() body: any,
+    @CurrentContext() context: RequestContextData,
+  ) {
     const result = MemorySearchSchema.safeParse(body);
     if (!result.success) {
       throw new BadRequestException({
@@ -42,21 +42,14 @@ export class MemoryController {
       });
     }
 
-    const context = this.contextService.getStore();
-    if (!context) {
-      throw new BadRequestException('Request context is missing');
-    }
-
     return this.memoryService.searchSimilarity(context.tenantId, context.projectId, result.data);
   }
 
   @Get('trace/:traceId')
-  async getMemoriesByTrace(@Param('traceId') traceId: string) {
-    const context = this.contextService.getStore();
-    if (!context) {
-      throw new BadRequestException('Request context is missing');
-    }
-
+  async getMemoriesByTrace(
+    @Param('traceId') traceId: string,
+    @CurrentContext() context: RequestContextData,
+  ) {
     return this.memoryService.findMemoriesByTrace(context.projectId, traceId);
   }
 
