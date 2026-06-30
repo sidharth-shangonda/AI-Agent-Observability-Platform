@@ -1,6 +1,6 @@
 import { Controller, Post, Body, UseGuards, Inject, HttpCode, HttpStatus, BadRequestException } from '@nestjs/common';
-import { ApiKeyGuard } from '../auth/auth.guard';
-import { ContextService } from '../auth/context.service';
+import { ApiKeyGuard } from '../common/guards/api-key.guard';
+import { CurrentContext, RequestContextData } from '../common/decorators/current-context.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -13,23 +13,20 @@ export class TelemetryController {
   constructor(
     @InjectQueue('trace-ingestion') private readonly traceQueue: Queue,
     @Inject(PrismaService) private readonly prismaService: PrismaService,
-    @Inject(ContextService) private readonly contextService: ContextService,
   ) {}
 
   @Post()
   @HttpCode(HttpStatus.ACCEPTED)
-  async ingestTraces(@Body() body: any) {
+  async ingestTraces(
+    @Body() body: any,
+    @CurrentContext() context: RequestContextData,
+  ) {
     const result = TelemetryTraceSchema.safeParse(body);
     if (!result.success) {
       throw new BadRequestException({
         message: 'Telemetry payload validation failed',
         errors: result.error.format(),
       });
-    }
-
-    const context = this.contextService.getStore();
-    if (!context) {
-      throw new BadRequestException('Request context is missing');
     }
 
     // 1. Log raw trace payload to database under current project RLS boundary
