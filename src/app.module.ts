@@ -3,7 +3,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { validateConfig } from './config/env.config';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
-import { ContextMiddleware } from './auth/context.middleware';
+import { ContextMiddleware } from './common/middleware/context.middleware';
+import { CommonModule } from './common/common.module';
 import { BullModule } from '@nestjs/bullmq';
 import { TelemetryModule } from './telemetry/telemetry.module';
 import { MemoryModule } from './memory/memory.module';
@@ -33,6 +34,7 @@ import { MemoryModule } from './memory/memory.module';
         },
       }),
     }),
+    CommonModule,
     PrismaModule,
     HealthModule,
     TelemetryModule,
