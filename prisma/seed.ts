@@ -3,7 +3,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import * as crypto from 'crypto';
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL || process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
@@ -21,6 +21,11 @@ async function setProjectContext(projectId: string) {
 
 async function main() {
   console.log('🌱 Starting database seeding...');
+
+  // Clean up existing database records using Cascade Truncation
+  console.log('🧹 Cleaning up existing database records (Cascaded)...');
+  await prisma.$executeRawUnsafe('TRUNCATE TABLE "Tenant" CASCADE;');
+  console.log('✅ Database cleaned successfully.');
 
   // 1. Create Tenant (Demo Corporation)
   // Tenant is not project-scoped, but it has no parent table, so RLS policy allows insertions if context is matches (or we bypass by not having tenantId restriction on Tenant table itself)
