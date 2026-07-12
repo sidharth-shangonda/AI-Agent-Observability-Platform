@@ -9,6 +9,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { TelemetryModule } from './telemetry/telemetry.module';
 import { MemoryModule } from './memory/memory.module';
 import { WebhookModule } from './webhook/webhook.module';
+import { MetricsModule } from './metrics/metrics.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { WebhookModule } from './webhook/webhook.module';
     TelemetryModule,
     MemoryModule,
     WebhookModule,
+    MetricsModule,
   ],
 })
 export class AppModule implements NestModule {
