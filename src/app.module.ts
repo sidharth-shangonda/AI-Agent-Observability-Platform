@@ -8,6 +8,7 @@ import { CommonModule } from './common/common.module';
 import { BullModule } from '@nestjs/bullmq';
 import { TelemetryModule } from './telemetry/telemetry.module';
 import { MemoryModule } from './memory/memory.module';
+import { WebhookModule } from './webhook/webhook.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { MemoryModule } from './memory/memory.module';
     HealthModule,
     TelemetryModule,
     MemoryModule,
+    WebhookModule,
   ],
 })
 export class AppModule implements NestModule {
