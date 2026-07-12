@@ -69,7 +69,7 @@ describe('Prometheus Metrics Integration Tests (Phase 7)', () => {
   afterAll(async () => {
     // Delete data created during test
     await systemPrisma.agentSpan.deleteMany({
-      where: { id: 'span-metrics-test-101' },
+      where: { id: 'bc5e683f-df30-4e31-8ea8-54313f02ee19' },
     });
     await systemPrisma.agentTrace.deleteMany({
       where: { externalTraceId: 'trace-metrics-ext-101' },
@@ -112,7 +112,7 @@ describe('Prometheus Metrics Integration Tests (Phase 7)', () => {
           status: 'SUCCESS',
           spans: [
             {
-              id: 'span-metrics-test-101',
+              id: 'bc5e683f-df30-4e31-8ea8-54313f02ee19',
               type: 'LLM',
               name: 'metrics-llm-span',
               status: 'SUCCESS',
