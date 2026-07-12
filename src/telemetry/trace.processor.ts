@@ -7,6 +7,7 @@ import { TelemetryTraceSchema } from './telemetry.schema';
 import { TraceStatus, Prisma } from '@prisma/client';
 import { PricingService } from './pricing.service';
 import { AnomalyService } from '../webhook/anomaly.service';
+import { MetricsService } from '../metrics/metrics.service';
 
 @Processor('trace-ingestion')
 export class TraceProcessor extends WorkerHost {
@@ -16,6 +17,7 @@ export class TraceProcessor extends WorkerHost {
     @Inject(SystemPrismaService) private readonly systemPrisma: SystemPrismaService,
     @Inject(PricingService) private readonly pricingService: PricingService,
     @Inject(AnomalyService) private readonly anomalyService: AnomalyService,
+    @Inject(MetricsService) private readonly metricsService: MetricsService,
   ) {
     super();
   }
@@ -194,6 +196,24 @@ export class TraceProcessor extends WorkerHost {
 
       // 6. Run anomaly evaluation rules on processed spans
       await this.anomalyService.evaluateSpans(flatSpans, projectId);
+
+      // 7. Track trace, spans, tokens, cost and latency in Prometheus metrics
+      this.metricsService.trackTraceIngested(tenantId, projectId, payload.status);
+      this.metricsService.trackTraceLatency(tenantId, projectId, latencyMs);
+      this.metricsService.trackCost(tenantId, projectId, cost);
+
+      for (const span of flatSpans) {
+        this.metricsService.trackSpan(tenantId, projectId, span.type);
+        if (span.type === 'LLM' && span.tokenCount && typeof span.tokenCount === 'object') {
+          const tc = span.tokenCount as any;
+          if (tc.prompt > 0) {
+            this.metricsService.trackTokens(tenantId, projectId, 'prompt', tc.prompt);
+          }
+          if (tc.completion > 0) {
+            this.metricsService.trackTokens(tenantId, projectId, 'completion', tc.completion);
+          }
+        }
+      }
 
       this.logger.log(`Trace processing job ${job.id} succeeded for rawTraceId: ${rawTraceId}`);
 
