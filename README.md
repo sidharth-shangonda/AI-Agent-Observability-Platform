@@ -1,41 +1,28 @@
 # AI Agent Observability Platform
 
-A production-grade, high-throughput, multi-tenant backend platform designed to ingest, trace, and monitor AI agent executions in real-time. It helps developers debug nested LLM chains, analyze tool executions, track token costs, detect anomalies, and search agent memory.
+A production-grade, high-throughput, multi-tenant backend platform designed to ingest, trace, and monitor AI agent executions in real-time. It enables developers to debug nested LLM chains, analyze tool executions, calculate exact token costs, receive real-time anomaly alerts, and query agent memory.
 
 Think of it as a developer-first, self-hosted alternative to platforms like **Langfuse**, **Helicone**, and **AgentOps**.
 
 ---
 
-## The Problem
+## What the Platform Does
 
-AI agents are notoriously difficult to debug in production because a single user request triggers a cascade of hidden, nested steps:
-1. **Retrieval**: Querying vector databases for context.
-2. **LLM Calls**: Multiple reasoning and planning steps.
-3. **Tool Executions**: Searching web APIs, running calculations, or reading databases.
-4. **Memory Loops**: Saving and retrieving agent state.
+When AI agents execute in production, a single user prompt triggers a cascade of hidden, nested steps (e.g., database queries, LLM completions, tool calls, and memory lookups). If an agent enters an infinite loop, errors out, or experiences a latency spike, debugging becomes extremely difficult.
 
-When an agent behaves abnormally (e.g., hallucinating, failing a tool call, or entering an infinite loop), developers need answers to:
-* *Which specific step failed?*
-* *Was the latency spike caused by the model, database, or a third-party API?*
-* *How many tokens were consumed, and what did this run cost?*
-* *Was the retrieved memory relevant?*
-* *Which tenant/project was affected?*
-
-This platform provides deep visibility into these execution graphs.
+This platform solves this by providing:
+*   **Hierarchical Execution Tracing**: Automatically organizes flat spans into parent-child trees showing the exact execution flow of your agent.
+*   **Multi-Tenant Isolation**: Enforces strict database Row-Level Security (RLS) ensuring that no tenant or project can view another's traces or memories.
+*   **Dynamic LLM Cost Tracking**: Standardizes OpenTelemetry GenAI semantic conventions to extract token counts, lookup provider rates, and aggregate costs in real-time.
+*   **Vector Memory Search**: Stores 1536-dimensional embeddings with cosine similarity distance filters to track and search what your agent remembers.
+*   **Real-Time Alerts (Anomaly Engine)**: Evaluates completed spans for model failures, cost spikes, and latency issues, enqueuing self-retrying signed webhooks.
+*   **Prometheus Monitoring**: Exposes a `/metrics` scrape endpoint reporting performance metrics labeled by tenant and project for Grafana dashboard visualization.
 
 ---
 
-## Tech Stack
+## Rough Design & Architecture
 
-* **Language & Framework**: TypeScript, NestJS (Fastify Adapter for high-performance throughput)
-* **Database & ORM**: PostgreSQL 16, Prisma ORM, `pgvector` extension
-* **Caching & Message Queue**: Redis 7, BullMQ (for asynchronous background trace workers)
-* **Observability & Health**: Prometheus, Grafana, Jest (Integration testing)
-* **Infrastructure**: Docker, Docker Compose, GitHub Actions
-
----
-
-## System Architecture
+The system uses an asynchronous, decoupled architecture to process high-throughput trace ingestion while ensuring client response times remain under a few milliseconds:
 
 ```mermaid
 graph TD
@@ -47,7 +34,7 @@ graph TD
     
     Queue -->|6. Process Asynchronously| Worker[Background Worker]
     Worker -->|7. Parse Spans & Hierarchy| Prisma[Prisma Service]
-    Prisma -->|8. Apply RLS session variable| DB[(PostgreSQL + pgvector)]
+    Prisma -->|8. Apply RLS session variables| DB[(PostgreSQL + pgvector)]
     
     Worker -->|9. Check Anomaly Rules| Engine[Anomaly Engine]
     Engine -->|10. Alert| Webhook[Webhook Outbox Queue]
@@ -56,180 +43,136 @@ graph TD
     Grafana[Grafana Dashboard] -->|Visualize Metrics| Prometheus
 ```
 
----
-
-## Project Roadmap & Status
-
-Below is the structured progress of the **60-day engineering roadmap**:
-
-### 🟩 Phase 0 — Foundation (Days 1–3)
-* **NestJS Fastify Adapter**: Replaced default Express with Fastify to maximize API throughput for trace ingestion.
-* **Strict Runtime Config Validation**: Implemented Zod environment parsing at boot, failing fast if required parameters are missing.
-* **Local Developer Container Stack**: Configured a `docker-compose.yml` running PostgreSQL 16 (pgvector), Redis 7, and Prometheus.
-* **Health Check Endpoint**: Exposed `GET /health` returning timestamped status metrics.
-
-### 🟩 Phase 1 — Database & Multi-Tenancy (Days 4–10)
-* **Prisma v7 Configuration**: Implemented Prisma's decoupled configuration using `prisma.config.ts` to manage environment connections.
-* **Schema Design**: Implemented 11 models: `Tenant`, `Project`, `ApiKey`, `RawTrace`, `AgentTrace`, `AgentSpan`, `AgentMemory`, `EvaluationResult`, `WebhookEndpoint`, `WebhookOutbox`, and `DeadLetterJob`.
-* **pgvector Extension & Cosine Index**: Configured the `vector` extension and built a manual SQL migration to compile an **HNSW index** on `AgentMemory` embeddings.
-* **Tenant Isolation (Row-Level Security)**: Enabled and forced RLS on all tables. Created a dedicated non-superuser database role (`observability_app`) to run application queries, ensuring no database access is permitted without a valid tenant context.
-* **Database Seeding**: Implemented a seed script that correctly binds session parameters to mock and insert tenant, project, trace, and memory records.
-
-### 🟩 Phase 2 — Authentication & Context Isolation (Days 11–15)
-* **Double-Client Database Split**:
-  - `PrismaService` (Subject to RLS): Runs regular controller queries under the `observability_app` role.
-  - `SystemPrismaService` (Bypasses RLS): Runs as `postgres` superuser for API key lookups in the auth guard.
-* **AsyncLocalStorage Request Context**: Implemented a global middleware wrapping requests in an async storage boundary to store active project/tenant scopes.
-* **API Key Auth Guard**: Custom `ApiKeyGuard` supporting Bearer token and `x-api-key` headers. Hashes keys with SHA-256 for secure database validation.
-* **Automated RLS Injector**: Built a Prisma Client query extension that intercepts all operations, wrapping them in an interactive transaction that executes `SET LOCAL` variables dynamically. Utilizes an `isInRlsTransaction` context flag to prevent infinite recursion deadlocks.
-* **Jest Integration Tests**: Created a full test suite utilizing Fastify's native `inject()` method to verify that RLS isolation blocks unauthorized project access.
-
-### 🟩 Phase 3 — Telemetry Ingestion & Queue (Days 16–21)
-* **Zod Payload Validation**: Implemented strict validation schemas for telemetry inputs to validate trace boundaries, timestamps, and nested span parameters.
-* **Asynchronous Buffer Queue**: Configured global `BullModule` queue integration backed by the local Redis container instance.
-* **POST /v1/traces Telemetry API**: Implemented a protected controller route that writes trace payloads to `RawTrace`, enqueues a processing job with the raw trace ID, and instantly returns `202 Accepted` to keep client latency low.
-* **Idempotent Background Worker**: Implemented a `TraceProcessor` worker that:
-  - Computes cumulative trace statistics: total tokens, costs, and span-boundary latency.
-  - Groups spans into flat structures for batch inserts via `createMany`, resolving relations cleanly in Prisma.
-  - Guarantees idempotency by checking and deleting existing trace duplicate records in a transaction before inserting updates.
-* **Jest Test Coverage**: Created a test suite mock-testing enqueues, payload parsing, tree writes, and idempotency overrides.
-
-### 🟩 Phase 4 — OpenTelemetry Mapping & Trace Costs (Days 22–27)
-* **Model Pricing Catalog**: Built a `PricingService` storing prompt and completion token rates for major LLM providers (OpenAI, Anthropic, Cohere) supporting exact and prefix version matching.
-* **OTel Convention Extraction**: Automatically extracts token counts and model attributes from standard OpenTelemetry semantic metadata (e.g., `gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.prompt_tokens`) when root values are missing.
-* **Dynamic Cost Aggregation**: Computes cost for LLM spans missing explicit values based on extracted token counts, and accumulates trace-level `cost` and `tokensUsed` statistics.
-* **Jest Test Integration**: Added comprehensive tests verifying exact pricing rates, fallback parameters, and OTel attribute handling.
-
-### 🟩 Phase 5 — Vector Search & Memory Tracing (Days 28–35)
-* **Zod Schemas**: Created validation schemas for memory storage and cosine similarity search (handling exact 1536 float arrays).
-* **Manual RLS SQL Binding**: Wrapped raw database client calls (`$executeRawUnsafe` / `$queryRawUnsafe`) in interactive transaction connection sessions executing custom PG `set_config` parameters to enforce multi-tenant isolation.
-* **REST Memory API**: Exposed protected endpoints under `/v1/memory` for storing, similarity searching, retrieving, listing by trace, and deleting memories.
-* **Integration Tests**: Added full test coverage for dimension checks, cosine similarity ordering, similarity threshold filters, and RLS project boundaries.
-
-### 🟩 Phase 6 — Webhook Alerting & Anomaly Engine (Days 36–45)
-* **Real-time Anomaly Detection**: Built an engine that automatically evaluates incoming trace spans against three critical thresholds: token cost spikes (`> $0.010`), latency spikes (`> 5000ms`), and model failures (`status: ERROR`).
-* **RLS-isolated Webhook Registration**: Exposed REST endpoints under `/v1/webhooks` that allow tenants to register target URLs and events, fully isolated via PostgreSQL Row-Level Security.
-* **Resilient Outbox & Cryptographic Signing**: Implemented a self-retrying BullMQ webhook-delivery worker that signs outgoing posts using HMAC-SHA256 signatures passed in `X-Webhook-Signature` for request verification.
-
-### 🟩 Phase 7 — Prometheus Metric Scopes & Grafana (Days 46–60)
-* **Multi-Tenant Instrumentation (`prom-client`)**: Configured a global `MetricsService` collecting throughput rates, span allocations, latency distribution histograms, token counts, and cost aggregates—labeled with `tenant_id` and `project_id` for tenant-scoped dashboards.
-* **Exposition Endpoint & Backlogs**: Exposed `GET /metrics` returning raw Prometheus exposition format content, dynamically polling active and waiting queue lengths from both BullMQ queue instances.
-* **Full Integration Test Coverage**: Added comprehensive integration test suites checking RLS boundaries, HMAC validation, and metrics exports.
+### Request Lifecycle
+1.  **Ingestion**: The client application posts trace payloads to `/v1/traces` using API key authorization headers.
+2.  **Context Binding**: The auth guard checks the key, finds the matching project, and registers the project/tenant context in `AsyncLocalStorage`.
+3.  **Decoupled Queueing**: The API writes the raw payload to the database and immediately pushes an ingestion job to a BullMQ Redis queue, returning a `202 Accepted` response.
+4.  **Worker Processing**: A background consumer picks up the job, resolves span relationships, computes token costs, detects anomalies, and registers Prometheus metrics.
+5.  **Alert Delivery**: If anomalies are detected, a delivery job is pushed to the webhook queue, which sends an HMAC-SHA256 signed POST request to the tenant's webhook listener.
 
 ---
 
-## How to Run Locally
+## Key Design Decisions
+
+### 1. Row-Level Security (RLS) Database Isolation
+To ensure absolute data security in a multi-tenant application, we enabled PostgreSQL Row-Level Security on all telemetry tables. Instead of relying on manual application-level `WHERE tenant_id = x` filters (which are prone to developer omission errors), database policies are enforced at the connection level:
+*   **Dual-Prisma Client Split**:
+    *   `PrismaService`: Runs regular queries connecting via a restricted non-superuser role (`observability_app`).
+    *   `SystemPrismaService`: Connects as the superuser (`postgres`) to validate API keys before context is active and run background workers.
+*   **Automatic RLS Transaction Injection**: Every database query executed by `PrismaService` is automatically wrapped in an interactive transaction that runs session configuration variables (`SET LOCAL app.current_tenant_id` and `SET LOCAL app.current_project_id`) prior to query execution.
+
+### 2. Thread-Safe Context Propagation via `AsyncLocalStorage`
+We wrapped Fastify requests inside `AsyncLocalStorage` boundaries. This allows deep nested services (like the Prisma RLS extension) to read the active request's `tenantId` and `projectId` implicitly without having to pass context objects through every method parameter in the application.
+
+### 3. Decoupled Processing (BullMQ + Redis)
+Trace payloads contain hundreds of nested spans. Parsing tree graphs and executing cost mappings synchronously would slow down client API response times. By buffering incoming payloads inside a Redis-backed BullMQ queue, we guarantee the API remains ultra-responsive under high-throughput conditions.
+
+### 4. Cryptographic Webhook Signing
+Webhooks are signed using HMAC-SHA256 signatures generated with a tenant-configured secret. The signature is sent in the `X-Webhook-Signature` header, allowing the receiver server to verify the request payload is authentic and has not been spoofed or modified.
+
+---
+
+## Exposed Prometheus Metrics
+
+The `/metrics` endpoint exposes custom application metrics formatted in standard Prometheus exposition format. Multi-tenant metrics feature `tenant_id` and `project_id` labels to support isolated dashboards in Grafana:
+
+| Metric Name | Type | Labels | Description |
+| :--- | :--- | :--- | :--- |
+| `observability_traces_ingested_total` | Counter | `tenant_id`, `project_id`, `status` | Cumulative number of ingested traces |
+| `observability_spans_total` | Counter | `tenant_id`, `project_id`, `type` | Cumulative span count by type (`LLM`, `TOOL`, etc.) |
+| `observability_tokens_total` | Counter | `tenant_id`, `project_id`, `type` | Cumulative prompt/completion token count |
+| `observability_cost_usd_total` | Counter | `tenant_id`, `project_id` | Cumulative USD expenditure of LLM requests |
+| `observability_trace_latency_ms` | Histogram | `tenant_id`, `project_id` | Latency distribution of processed traces |
+| `observability_queue_jobs_total` | Gauge | `queue_name`, `status` | Backlog sizes of trace and webhook queues |
+
+---
+
+## Technology Stack
+
+*   **Runtime & Framework**: TypeScript, NestJS (Fastify Adapter)
+*   **Database & ORM**: PostgreSQL 16, pgvector (vector storage), Prisma ORM
+*   **Queueing & Buffering**: Redis 7, BullMQ
+*   **Metrics & Diagnostics**: prom-client, Prometheus, Grafana
+*   **Validation**: Zod (for payload and env schema validation)
+
+---
+
+## Setup & Running Guide
 
 ### 1. Prerequisites
-* Node.js (v18+)
-* `pnpm` package manager
-* Docker & Docker Compose
+Ensure you have the following installed:
+*   [Node.js](https://nodejs.org/) (v18+)
+*   [pnpm](https://pnpm.io/) package manager
+*   [Docker & Docker Compose](https://www.docker.com/)
 
-### 2. Setup Environment
-Copy the example environment template:
+### 2. Configure Environment
+Copy the configuration template to set up database ports, queue passwords, and secrets:
 ```bash
 cp .env.example .env
 ```
 
 ### 3. Spin Up Infrastructure Containers
-Start Postgres, Redis, and Prometheus:
+Start local PostgreSQL (mapped to `5435` to avoid host conflicts), Redis (`6379`), and Prometheus (`9090`):
 ```bash
 docker compose up -d
 ```
-*(Note: Postgres is mapped to host port `5435` to avoid conflicts with native PostgreSQL servers running on `5432`.)*
 
-### 4. Deploy Database & Seeding
-Create the database user roles, apply migrations (creating tables, HNSW indexes, and RLS policies), and seed the database:
+### 4. Apply Migrations & Database Seeding
+This creates the tables, compiles the vector `HNSW` indexes, sets up RLS policies, and inserts mock test data:
 ```bash
-# 1. Authorize PNPM dependency builds (esbuild and prisma)
-pnpm approve-builds
+# Apply database schema
+npx prisma db push
 
-# 2. Run migrations
-npx prisma migrate dev
-
-# 3. Seed data
+# Seed mock tenants, projects, API keys, and memory vectors
 npx prisma db seed
 ```
 
-### 5. Start Application Dev Server
+### 5. Run the Application
+Start the development server:
 ```bash
-pnpm run start:dev
+npm run start:dev
 ```
-The server will boot and listen on `http://localhost:3000`.
+The server will boot on `http://localhost:3000`.
 
----
+### 6. Verification & Ingestion Testing
 
-## Testing & Verification
-
-### 1. Running Integration Tests
-Run all integration test suites (Authentication, RLS, Telemetry queue ingestion, OTel mappings, model cost calculations, and vector memory similarity search):
+#### Submit a Trace Payload (OTel Format)
+You can ingest a trace containing nested LLM spans using a seeded API key:
 ```bash
-npx jest src/auth/auth.spec.ts src/memory/memory.spec.ts src/telemetry/telemetry.spec.ts --preset ts-jest --runInBand
-```
-
-### 2. Manual Curl Tests
-
-* **Protected health check (Staging Project Key)**:
-  ```bash
-  curl -i -H "x-api-key: sk_test_stage_87654321fedcba" http://localhost:3000/health/protected
-  # Returns 200 OK with Staging context and traceCount = 0 (RLS filtered out Production trace)
-  ```
-
-* **Ingest OpenTelemetry GenAI trace payload**:
-  ```bash
-  curl -i -X POST http://localhost:3000/v1/traces \
-    -H "Content-Type: application/json" \
-    -H "x-api-key: sk_live_prod_12345678abcdef" \
-    -d '{
-      "id": "trace-curl-otel-1",
-      "name": "OTel Curl Test Trace",
-      "status": "SUCCESS",
-      "spans": [
-        {
-          "id": "4b6c8cd3-4e31-419b-b9f0-c65d6c8b9d31",
-          "type": "LLM",
-          "name": "OTel gpt-4o-mini call",
-          "status": "SUCCESS",
-          "startTime": "2026-06-21T12:00:00.000Z",
-          "endTime": "2026-06-21T12:00:01.000Z",
-          "metadata": {
-            "gen_ai.system": "openai",
-            "gen_ai.request.model": "gpt-4o-mini",
-            "gen_ai.usage.prompt_tokens": 15000,
-            "gen_ai.usage.completion_tokens": 5000
-          }
+curl -i -X POST http://localhost:3000/v1/traces \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: sk_live_prod_12345678abcdef" \
+  -d '{
+    "id": "trace-manual-test-1",
+    "name": "OTel Test Trace",
+    "status": "SUCCESS",
+    "spans": [
+      {
+        "id": "11111111-2222-3333-4444-555555555555",
+        "type": "LLM",
+        "name": "gpt-4o API Call",
+        "status": "SUCCESS",
+        "startTime": "2026-07-04T12:00:00.000Z",
+        "endTime": "2026-07-04T12:00:01.000Z",
+        "metadata": {
+          "gen_ai.system": "openai",
+          "gen_ai.request.model": "gpt-4o",
+          "gen_ai.usage.prompt_tokens": 1000,
+          "gen_ai.usage.completion_tokens": 500
         }
-      ]
-    }'
-  # Returns 202 Accepted. The background queue worker automatically calculates cost (0.005250) and aggregates totals.
-  ```
-
-* **Store Vector Memory**:
-  ```bash
-  curl -i -X POST http://localhost:3000/v1/memory \
-    -H "Content-Type: application/json" \
-    -H "x-api-key: sk_live_prod_12345678abcdef" \
-    -d "{
-      \"content\": \"The agent queried web search to find latest nextjs specs.\",
-      \"embedding\": $(python3 -c "import json; print(json.dumps([0.015]*1536))"),
-      \"metadata\": {
-        \"traceId\": \"trace-curl-555\",
-        \"spanId\": \"50cb88c4-be00-4b53-83eb-62cf9b3f3a0a\",
-        \"source\": \"curl-test\"
       }
-    }"
-  # Returns 201 Created with the generated memory UUID.
-  ```
+    ]
+  }'
+```
 
-* **Search Similarity Vector Memory**:
-  ```bash
-  curl -i -X POST http://localhost:3000/v1/memory/search \
-    -H "Content-Type: application/json" \
-    -H "x-api-key: sk_live_prod_12345678abcdef" \
-    -d "{
-      \"embedding\": $(python3 -c "import json; print(json.dumps([0.015]*1536))"),
-      \"limit\": 2,
-      \"minSimilarity\": 0.9
-    }"
-  # Returns 200 OK with the array of matches sorted by similarity score.
-  ```
+#### Query Prometheus Metrics
+Retrieve application metrics:
+```bash
+curl http://localhost:3000/metrics
+```
+
+#### Run Automated Integration Tests
+Execute the full NestJS test suite:
+```bash
+npx jest src/common/guards/api-key.guard.spec.ts src/memory/memory.spec.ts src/telemetry/telemetry.spec.ts src/webhook/webhook.spec.ts src/metrics/metrics.spec.ts --preset ts-jest --runInBand
+```
