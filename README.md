@@ -106,11 +106,15 @@ Below is the structured progress of the **60-day engineering roadmap**:
 * **REST Memory API**: Exposed protected endpoints under `/v1/memory` for storing, similarity searching, retrieving, listing by trace, and deleting memories.
 * **Integration Tests**: Added full test coverage for dimension checks, cosine similarity ordering, similarity threshold filters, and RLS project boundaries.
 
-### ⬜ Phase 6 — Webhook Alerting & Anomaly Engine (Days 36–45)
-* *Future: Trigger real-time notifications on token cost spikes, model errors, or latency thresholds, and queue alerts to webhook endpoints.*
+### 🟩 Phase 6 — Webhook Alerting & Anomaly Engine (Days 36–45)
+* **Real-time Anomaly Detection**: Built an engine that automatically evaluates incoming trace spans against three critical thresholds: token cost spikes (`> $0.010`), latency spikes (`> 5000ms`), and model failures (`status: ERROR`).
+* **RLS-isolated Webhook Registration**: Exposed REST endpoints under `/v1/webhooks` that allow tenants to register target URLs and events, fully isolated via PostgreSQL Row-Level Security.
+* **Resilient Outbox & Cryptographic Signing**: Implemented a self-retrying BullMQ webhook-delivery worker that signs outgoing posts using HMAC-SHA256 signatures passed in `X-Webhook-Signature` for request verification.
 
-### ⬜ Phase 7 — Prometheus Metric Scopes & Grafana (Days 46–60)
-* *Future: Expose custom Prometheus metrics (throughput, latency, token count, cost aggregate, queue load) and design dashboards for multi-tenant visualization.*
+### 🟩 Phase 7 — Prometheus Metric Scopes & Grafana (Days 46–60)
+* **Multi-Tenant Instrumentation (`prom-client`)**: Configured a global `MetricsService` collecting throughput rates, span allocations, latency distribution histograms, token counts, and cost aggregates—labeled with `tenant_id` and `project_id` for tenant-scoped dashboards.
+* **Exposition Endpoint & Backlogs**: Exposed `GET /metrics` returning raw Prometheus exposition format content, dynamically polling active and waiting queue lengths from both BullMQ queue instances.
+* **Full Integration Test Coverage**: Added comprehensive integration test suites checking RLS boundaries, HMAC validation, and metrics exports.
 
 ---
 
