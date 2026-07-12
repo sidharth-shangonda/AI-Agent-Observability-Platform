@@ -6,6 +6,7 @@ import { SystemPrismaService } from '../prisma/system-prisma.service';
 import { TelemetryTraceSchema } from './telemetry.schema';
 import { TraceStatus, Prisma } from '@prisma/client';
 import { PricingService } from './pricing.service';
+import { AnomalyService } from '../webhook/anomaly.service';
 
 @Processor('trace-ingestion')
 export class TraceProcessor extends WorkerHost {
@@ -14,6 +15,7 @@ export class TraceProcessor extends WorkerHost {
   constructor(
     @Inject(SystemPrismaService) private readonly systemPrisma: SystemPrismaService,
     @Inject(PricingService) private readonly pricingService: PricingService,
+    @Inject(AnomalyService) private readonly anomalyService: AnomalyService,
   ) {
     super();
   }
@@ -189,6 +191,9 @@ export class TraceProcessor extends WorkerHost {
           },
         });
       });
+
+      // 6. Run anomaly evaluation rules on processed spans
+      await this.anomalyService.evaluateSpans(flatSpans, projectId);
 
       this.logger.log(`Trace processing job ${job.id} succeeded for rawTraceId: ${rawTraceId}`);
 
