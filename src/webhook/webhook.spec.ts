@@ -14,6 +14,7 @@ describe('Webhook Alerting & Anomaly Engine Integration Tests (Phase 6)', () => 
   let systemPrisma: SystemPrismaService;
   let traceProcessor: TraceProcessor;
   let webhookProcessor: WebhookProcessor;
+  let registeredEndpoint: any;
 
   // Mock server to catch outgoing webhooks
   let mockServer: http.Server;
@@ -26,9 +27,21 @@ describe('Webhook Alerting & Anomaly Engine Integration Tests (Phase 6)', () => 
   // Mock BullMQ queues
   const mockTraceQueue = {
     add: jest.fn().mockResolvedValue({ id: 'mock-trace-job-id' }),
+    opts: {
+      connection: {
+        host: process.env.REDIS_HOST || 'localhost',
+        port: Number(process.env.REDIS_PORT) || 6379,
+      },
+    },
   };
   const mockWebhookQueue = {
     add: jest.fn().mockResolvedValue({ id: 'mock-webhook-job-id' }),
+    opts: {
+      connection: {
+        host: process.env.REDIS_HOST || 'localhost',
+        port: Number(process.env.REDIS_PORT) || 6379,
+      },
+    },
   };
 
   beforeAll(async () => {
@@ -77,13 +90,31 @@ describe('Webhook Alerting & Anomaly Engine Integration Tests (Phase 6)', () => 
       mockServer.close(() => resolve());
     });
 
-    // Delete webhook endpoints and outbox entries created during test
-    await systemPrisma.webhookOutbox.deleteMany({});
-    await systemPrisma.webhookEndpoint.deleteMany({});
-    await systemPrisma.evaluationResult.deleteMany({});
-    await systemPrisma.agentSpan.deleteMany({});
-    await systemPrisma.agentTrace.deleteMany({});
-    await systemPrisma.rawTrace.deleteMany({});
+    // Delete ONLY the specific test data we created to avoid clearing seeds needed by other tests
+    if (registeredEndpoint?.id) {
+      await systemPrisma.webhookOutbox.deleteMany({
+        where: { endpointId: registeredEndpoint.id },
+      });
+      await systemPrisma.webhookEndpoint.deleteMany({
+        where: { id: registeredEndpoint.id },
+      });
+    }
+
+    await systemPrisma.evaluationResult.deleteMany({
+      where: { spanId: { in: ['4a2e5842-7a0e-4122-83b6-2ff929115b81', '901f4c71-b0ad-44b2-a4f6-8c9038234851', '618efb3b-e01a-4d22-86ff-90a8c2ef4852'] } },
+    });
+
+    await systemPrisma.agentSpan.deleteMany({
+      where: { id: { in: ['4a2e5842-7a0e-4122-83b6-2ff929115b81', '901f4c71-b0ad-44b2-a4f6-8c9038234851', '618efb3b-e01a-4d22-86ff-90a8c2ef4852'] } },
+    });
+
+    await systemPrisma.agentTrace.deleteMany({
+      where: { externalTraceId: 'trace-anomaly-ext-101' },
+    });
+
+    await systemPrisma.rawTrace.deleteMany({
+      where: { id: 'trace-anomaly-test-raw-uuid' },
+    });
 
     await app.close();
   });
@@ -174,7 +205,6 @@ describe('Webhook Alerting & Anomaly Engine Integration Tests (Phase 6)', () => 
 
   describe('2. Anomaly Engine & Outbox Ingestion Flow', () => {
     let project: any;
-    let registeredEndpoint: any;
 
     beforeAll(async () => {
       // Find the Production project
@@ -210,7 +240,7 @@ describe('Webhook Alerting & Anomaly Engine Integration Tests (Phase 6)', () => 
             status: 'SUCCESS',
             spans: [
               {
-                id: 'span-error-1',
+                id: '4a2e5842-7a0e-4122-83b6-2ff929115b81',
                 type: 'LLM',
                 name: 'gpt-4o Call (Failing)',
                 status: 'ERROR',
@@ -218,7 +248,7 @@ describe('Webhook Alerting & Anomaly Engine Integration Tests (Phase 6)', () => 
                 endTime: '2026-07-12T12:00:01.000Z',
               },
               {
-                id: 'span-latency-1',
+                id: '901f4c71-b0ad-44b2-a4f6-8c9038234851',
                 type: 'CHAIN',
                 name: 'Slow Database Query',
                 status: 'SUCCESS',
@@ -226,7 +256,7 @@ describe('Webhook Alerting & Anomaly Engine Integration Tests (Phase 6)', () => 
                 endTime: '2026-07-12T12:00:06.000Z', // 6 seconds latency
               },
               {
-                id: 'span-cost-1',
+                id: '618efb3b-e01a-4d22-86ff-90a8c2ef4852',
                 type: 'LLM',
                 name: 'Large Claude prompt call',
                 status: 'SUCCESS',
@@ -262,19 +292,19 @@ describe('Webhook Alerting & Anomaly Engine Integration Tests (Phase 6)', () => 
 
       // 2. Assert Evaluation Results (Anomalies) are recorded
       const evaluations = await systemPrisma.evaluationResult.findMany({
-        where: { spanId: { in: ['span-error-1', 'span-latency-1', 'span-cost-1'] } },
+        where: { spanId: { in: ['4a2e5842-7a0e-4122-83b6-2ff929115b81', '901f4c71-b0ad-44b2-a4f6-8c9038234851', '618efb3b-e01a-4d22-86ff-90a8c2ef4852'] } },
       });
       expect(evaluations.length).toBe(3);
 
-      const errorEval = evaluations.find((e) => e.spanId === 'span-error-1');
+      const errorEval = evaluations.find((e) => e.spanId === '4a2e5842-7a0e-4122-83b6-2ff929115b81');
       expect(errorEval?.detectorName).toBe('model_error');
       expect(errorEval?.severity).toBe(Severity.CRITICAL);
 
-      const latencyEval = evaluations.find((e) => e.spanId === 'span-latency-1');
+      const latencyEval = evaluations.find((e) => e.spanId === '901f4c71-b0ad-44b2-a4f6-8c9038234851');
       expect(latencyEval?.detectorName).toBe('latency_spike');
       expect(latencyEval?.severity).toBe(Severity.MEDIUM);
 
-      const costEval = evaluations.find((e) => e.spanId === 'span-cost-1');
+      const costEval = evaluations.find((e) => e.spanId === '618efb3b-e01a-4d22-86ff-90a8c2ef4852');
       expect(costEval?.detectorName).toBe('token_cost_spike');
       expect(costEval?.severity).toBe(Severity.HIGH);
 
